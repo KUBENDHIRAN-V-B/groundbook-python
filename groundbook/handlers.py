@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from .errors import (
     FILTER,
+    VALIDATION,
     DomainError,
 )
 
@@ -35,7 +36,7 @@ def install_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_request: Request, exc: RequestValidationError):
-        # and A query parameter that does not parse is 400.
+        # A query parameter that does not parse is 400; a body that fails its constraints is 422.
         errors = [
             {
                 "field": ".".join(str(p) for p in e["loc"] if p not in ("body", "query", "path")),
@@ -43,5 +44,8 @@ def install_handlers(app: FastAPI) -> None:
             }
             for e in exc.errors()
         ]
+        if any(e["loc"] and e["loc"][0] == "body" for e in exc.errors()):
+            status, type_, title = VALIDATION
+            return problem(status, type_, title, f"{len(errors)} field(s) failed validation", errors=errors)
         status, type_, title = FILTER
         return problem(status, type_, title, f"{len(errors)} query parameter(s) invalid", errors=errors)

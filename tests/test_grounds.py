@@ -1,12 +1,12 @@
 """Four grounds with their hours and six event types with their buffers, loaded once; a day read as blocks with
 the shadows derived around them -- Sunday on its own hours."""
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text, update
 
 from groundbook.app import create_app
 from groundbook.clock import get_clock
-from groundbook.models import EventType, Ground
-from tests.conftest import SAT, SUN, V, day, make_settings
+from groundbook.models import Booking, EventType, Ground
+from tests.conftest import SAT, SUN, V, day, make_settings, requested
 
 GROUND_A = {"ground": "A", "name": "Ground A", "opens": "06:00", "closes": "22:00", "sunday_opens": "07:00", "sunday_closes": "20:00"}
 
@@ -75,3 +75,32 @@ def test_every_response_goes_through_a_declared_model(client):
         for op in ops.values():
             ok = [r for code, r in op["responses"].items() if code.startswith("2")]
             assert ok and all("$ref" in r["content"]["application/json"]["schema"] for r in ok), path
+
+
+def test_a_league_booking_two_till_five_is_held_from_thirteen_twenty_to_seventeen_thirty(client):
+    b = requested(client, "A", "league", "14:00", "17:00")
+    d = day(client, "A", SAT)
+    assert d == {
+        "venue": "deccan", "ground": "A", "date": SAT, "opens": "06:00", "closes": "22:00",
+        "bookings": [{
+            "booking_id": b["booking_id"], "event": "league",
+            "from": f"{SAT}T14:00:00Z", "to": f"{SAT}T17:00:00Z",
+            "ground_held_from": f"{SAT}T13:20:00Z", "ground_held_to": f"{SAT}T17:30:00Z",
+            "state": "requested",
+        }],
+    }
+
+
+def test_the_day_is_in_from_order_and_the_shadow_is_derived_not_stored(client, db):
+    late = requested(client, "A", "practice", "18:00", "19:00")
+    early = requested(client, "A", "school_day", "08:00", "12:00")
+    other_ground = requested(client, "B", "league", "10:00", "12:00")
+    ids = [b["booking_id"] for b in day(client, "A", SAT)["bookings"]]
+    assert ids == [early["booking_id"], late["booking_id"]] and other_ground["booking_id"] not in ids
+    assert "held" not in " ".join(c.name for c in Booking.__table__.columns), "no column stores the shadow"
+    with db() as s:
+        assert "held" not in " ".join(r[1] for r in s.execute(text("PRAGMA table_info(bookings)")).all())
+        s.execute(update(EventType).where(EventType.code == "practice").values(setup_minutes=45))
+        s.commit()
+    block = day(client, "A", SAT)["bookings"][1]
+    assert block["ground_held_from"] == f"{SAT}T17:15:00Z" and block["ground_held_to"] == f"{SAT}T19:20:00Z", "...and every read follows it"

@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .db import init_db, make_engine, make_sessionmaker
 from .handlers import install_handlers
-from .routers import grounds
+from .routers import bookings, grounds
 from .services.seed import seed
 from .settings import Settings
 
@@ -29,9 +29,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="GroundBook", version="0.1.0", lifespan=lifespan)
     app.state.sessionmaker = make_sessionmaker(engine)
+    app.state.settings = settings
 
     install_handlers(app)
-    for r in (grounds.router,):
+    for r in (grounds.router, bookings.router):
         app.include_router(r)
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
