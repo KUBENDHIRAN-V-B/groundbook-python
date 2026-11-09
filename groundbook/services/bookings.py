@@ -54,7 +54,7 @@ def clashes(
     exclude_id: int | None = None,
 ) -> list[tuple[Booking, datetime, datetime]]:
     """The clash predicate, on shadows, half-open: held_from_new < held_to_other AND held_from_other < held_to_new.
-    The request and the confirm call this one function; `exclude_id` is the booking itself."""
+    Requesting, confirming and moving all call this one function. `exclude_id` is the booking itself (the one being confirmed or moved)."""
     window_start, window_end = held_from - timedelta(days=1), held_to + timedelta(days=1)
     rows = session.execute(
         select(Booking, EventType).join(EventType, Booking.event_type_id == EventType.id)

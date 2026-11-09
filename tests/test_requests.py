@@ -124,3 +124,6 @@ def test_a_body_names_the_interval_from_and_to_only(client):
         "to_at": ts("17:00"), "club": CLUB,
     })
     assert r.status_code == 422 and {e["field"] for e in r.json()["errors"]} == {"from", "to"}, r.text
+    a = requested(client)
+    r = client.post(f"/bookings/{a['booking_id']}/move", json={"from_at": ts("15:00"), "to_at": ts("18:00")})
+    assert r.status_code == 422 and {e["field"] for e in r.json()["errors"]} == {"from", "to"}, r.text

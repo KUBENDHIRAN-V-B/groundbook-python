@@ -78,6 +78,10 @@ def requested(client, ground="A", event="league", frm="14:00", to="17:00", club=
     return r.json()
 
 
+def move(client, booking_id, frm, to, day=SAT):
+    return client.post(f"/bookings/{booking_id}/move", json={"from": ts(frm, day), "to": ts(to, day)})
+
+
 def booking(client, booking_id):
     r = client.get(f"/bookings/{booking_id}")
     assert r.status_code == 200, r.text
