@@ -3,6 +3,8 @@ one set of error handlers, and an OpenAPI document that
 lists exactly the answers each call can give."""
 import copy
 import json
+import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from .services.seed import seed
 from .settings import Settings
 
 STATIC = Path(__file__).parent / "static"
+logger = logging.getLogger("groundbook.http")
 TAGS = [
     {"name": "grounds", "description": "The complex -- four grounds, their hours, six event types with buffers -- and one ground's day as blocks with shadows"},
     {"name": "bookings", "description": "A club asks for a slot; the office confirms or cancels it"},
@@ -76,6 +79,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="GroundBook", version="0.1.0", lifespan=lifespan, openapi_tags=TAGS,
         description="A municipal sports complex: bookings with setup and teardown buffers that may never overlap.",
     )
+    @app.middleware("http")
+    async def log_requests(request, call_next):
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            logger.info(
+                "request method=%s path=%s status=%s duration_ms=%.2f",
+                request.method, request.url.path, response.status_code, elapsed_ms,
+            )
+            return response
+        except Exception:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            logger.exception(
+                "request method=%s path=%s status=500 duration_ms=%.2f",
+                request.method, request.url.path, elapsed_ms,
+            )
+            raise
+
     app.state.sessionmaker = make_sessionmaker(engine)
     app.state.settings = settings
 

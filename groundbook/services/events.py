@@ -5,6 +5,7 @@ The row is written with a Core INSERT, never through an ORM object: nothing in t
 change and flush, so the only path to the table is insert. The database triggers (db.py) refuse UPDATE and DELETE."""
 """Append-only booking transition event writes."""
 import json
+import logging
 from datetime import datetime
 
 from sqlalchemy import insert
@@ -14,6 +15,7 @@ from ..models import Event
 
 # Requests carry no identity: every transition is done by the municipal office (Deepa takes the calls).
 OFFICE = "office"
+logger = logging.getLogger("groundbook.events")
 
 
 def record(
@@ -27,4 +29,8 @@ def record(
             actor_id=actor_id, data=json.dumps(data or {}),
         ).returning(Event.id)
     ).scalar_one()
+    logger.info(
+        "booking_event id=%s booking_id=%s kind=%s actor=%s",
+        event_id, booking_id, kind, actor_id,
+    )
     return event_id

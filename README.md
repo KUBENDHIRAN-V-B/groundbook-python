@@ -1,64 +1,123 @@
 # GroundBook
 
-A municipal sports complex: four grounds, a wall planner in Sabu's office, and two clubs who twice arrived at the
-same ground on the same Saturday because the pencil marks show the match and never the forty minutes of setup
-around it. This folder is the state of the project at the end of this ticket: a booking casts its own
-shadow, and no two shadows may ever touch.
+A municipal sports-complex booking API and wall planner. This deployment setup is designed for the office PC: restarting or recreating the container must not erase Saturday's bookings.
 
-## What is here
+## Run with Docker (persistent data)
 
-| Part | What it does |
-|---|---|
-| Grounds | Four grounds with weekday and Sunday hours and six event types with setup/teardown buffers, loaded once from `seed/`; `GET /venues/deccan/grounds`, `GET …/event-types`, `GET …/grounds/{ground}/day?date=` — blocks in `from` order, each with `ground_held_from`/`ground_held_to` computed on read, never stored |
-| Requests | `POST /bookings` with real constraints: a malformed body is 422 naming each field; a valid body that asks the impossible (`to` ≤ `from`, the past, two dates, a shadow outside the hours) is 400 bad-interval with `opens`/`closes`; `hold_until` from `HOLD_HOURS`; `Location` on the 201 |
-| Confirm and cancel | `POST /bookings/{id}/confirm` and `…/cancel` against an injected clock: already-started, already-over, already-confirmed, already-cancelled; a cancel after `from` is allowed and flagged `late` |
-| Clashes | The clash predicate on shadows, half-open, both buffers — 409 overlap with `clashes_with`; a cancelled booking cannot be reconfirmed (409 cancelled); confirm re-runs the check; one handler maps every refusal |
-| Moves | `POST /bookings/{id}/move`: the whole new interval re-checked with the booking itself excluded, the old interval released and the new one taken in one UPDATE, all or nothing |
-| Events | An append-only event log per booking — requested, confirmed, moved (old and new intervals), cancelled (late or not) — written with one INSERT in the same transaction as the change; the database refuses UPDATE and DELETE; `GET /bookings/{id}` returns the timeline |
-| The API | Routers per resource (grounds, bookings, moves), one error shape for every error — the refusals, an unknown path (404), a wrong method (405) and the unexpected (500) — and docs that list exactly the answers each call can give |
-| Rules | `tests/rules.csv` — 24 cases under two buffer tables (uniform 40/30, per event type), every refusal type among them; only the two rows tagged `buffer` move; `GET /settings` shows the hold and the live buffer table |
-| The image | A Dockerfile from `python:3.12-slim` installing a complete lock file, `HOST=0.0.0.0`, `PORT=8080`, the day strip reachable from Sabu's gate tablet |
+Docker stores the SQLite database in `/data/groundbook.db`. `/data` is a named volume, so the database survives container removal and recreation.
 
-## Run it
+1. Copy the example configuration and adjust it if needed:
 
-```bash
-docker build -t groundbook .
-docker run -d --name groundbook -p 8080:8080 groundbook
-```
+   ```bash
+   cp .env.example .env
+   ```
 
-The image starts the app with
+2. Build the image:
 
-```
-CMD ["sh", "-c", "exec uvicorn groundbook.app:app --host \"$HOST\" --port \"$PORT\""]
-```
+   ```bash
+   docker build -t groundbook .
+   ```
 
-— the image's command, with the address and port read from `HOST` and `PORT`: the Dockerfile sets them to `0.0.0.0` and
-`8080`.
+3. Create the persistent volume once:
 
-Open `http://<office-pc-ip>:8080/` from the gate tablet — the day (four strips with their shadows), the Book
-screen, one booking's card, the rule book, the API and the runtime, with a walkthrough. Docs at
-`/docs`, health at `/healthz`.
+   ```bash
+   docker volume create groundbook-data
+   ```
 
-## Verified on this build
+4. Start the application, passing configuration at runtime (not baked into the image):
 
-Docker image build and host-network checks must be recorded after running Docker on the target machine; no Docker daemon was available in this build environment, so no image size or remote-host result is claimed here.
+   ```bash
+   docker run -d --name groundbook \
+     --env-file .env \
+     -p 8080:8080 \
+     -v groundbook-data:/data \
+     groundbook
+   ```
 
-## Run it locally
+Open `http://<office-pc-ip>:8080/` from the office PC or gate tablet. API docs are at `/docs`; health is at `/healthz`.
+
+### Prove the restart/recreate requirement
+
+Create a booking through the UI or `POST /bookings`, and save the returned `booking_id`. Then remove and recreate the container using the *same* volume:
 
 ```bash
-python -m venv .venv && .venv/Scripts/pip install -r requirements-dev.txt
+docker rm -f groundbook
+docker run -d --name groundbook \
+  --env-file .env \
+  -p 8080:8080 \
+  -v groundbook-data:/data \
+  groundbook
+```
+
+Verify the booking is still present:
+
+```bash
+curl -i http://localhost:8080/bookings/<booking_id>
+```
+
+The expected result is `HTTP/1.1 200 OK` with the booking and its event timeline. Do not run `docker volume rm groundbook-data`: removing the volume intentionally deletes the persisted database.
+
+### Configuration
+
+All runtime configuration is supplied by `.env` via `--env-file`; `.env` is ignored by Git and excluded from the Docker build context. `.env.example` documents the supported values:
+
+| Variable | Example | Purpose |
+|---|---|---|
+| `HOST` | `0.0.0.0` | Bind address inside the container |
+| `PORT` | `8080` | HTTP port |
+| `DATABASE_URL` | `sqlite:////data/groundbook.db` | Database location on the persistent volume |
+| `SEED_DIR` | `seed` | Initial grounds and event-type seed files |
+| `HOLD_HOURS` | `48` | Requested-booking hold duration |
+
+For example, set `HOLD_HOURS=48` in `.env`, recreate the container, and verify:
+
+```bash
+curl -s http://localhost:8080/settings
+```
+
+The response includes `"hold_hours": 48`. Existing bookings remain in the same volume.
+
+## One booking: request to the gate
+
+1. A club submits `POST /bookings` with a ground, event type, start/end timestamps and club name.
+2. GroundBook validates the interval and opening hours, applies the event type's setup/teardown buffers, and checks that the resulting held interval does not overlap another booking's held interval.
+3. On success, the API returns `201 Created`, a booking ID and a `Location` header. The requested booking and its `requested` event are committed to the database in one transaction. `hold_until` is calculated using `HOLD_HOURS`.
+4. The office clerk confirms the booking with `POST /bookings/{id}/confirm`. GroundBook rechecks the booking before changing its state and appends a `confirmed` event.
+5. The gate tablet reads the day planner from `GET /venues/deccan/grounds/{ground}/day?date=YYYY-MM-DD` and can retrieve the full booking and timeline from `GET /bookings/{id}`. The planner shows the booking and its setup/teardown shadow, so the gate team can see when the ground is held.
+6. The event history is append-only. Booking events are logged to stdout, as are every HTTP request, response status and duration. Use `docker logs groundbook` to inspect them:
+
+   ```bash
+   docker logs -f groundbook
+   ```
+
+The application does not write request/event logs beneath `/app`; Docker captures stdout/stderr.
+
+## Existing application features
+
+- Four grounds with weekday/Sunday hours and six event types, seeded idempotently from `seed/`.
+- `POST /bookings`, `GET /bookings/{id}`, confirm, cancel and move operations.
+- Setup/teardown buffers and overlap checks against the full held interval.
+- Append-only booking event timeline; database triggers reject event updates/deletes.
+- `GET /settings` reports the configured hold duration and live buffer table.
+
+## Run locally
+
+The container default database path is `/data/groundbook.db`. For local development, set a writable database URL in your shell or `.env`, for example `DATABASE_URL=sqlite:///./groundbook.db`, then run:
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
 python -m uvicorn groundbook.app:app --host 127.0.0.1 --port 8080
-python -m pytest            # 104 tests collected in this checkout; each uses an isolated SQLite file and controlled clock
+python -m pytest
 ```
 
-## Conventions
+On Windows, activate `.venv\\Scripts\\activate` and use `python -m pip` for installation.
 
-- Every error is `application/problem+json`: `type, title, status, detail` plus the fields the ticket names
-  (`clashes_with`, `opens`/`closes`, `errors[]`).
-- Ids are opaque strings (booking `BK0001`, ground `A`, event type `league`); database integers never reach the wire.
-- Timestamps are ISO-8601 UTC with a `Z`. Intervals are half-open `[from, to)`; two intervals clash when
-  `from1 < to2 and from2 < to1`, computed on the shadows (interval ± the event type's buffers), never on the bare intervals.
-- The clock and the database session are `Depends` dependencies; every rule about time reads the injected clock.
+## Notes
+
+- The image contains application code and seed data only. Runtime settings come from the env-file.
+- The Docker named volume is the persistence boundary. Reuse the same volume when replacing the container.
+- Docker image build and volume-recreation checks should be run on a machine with Docker available; do not infer success from the unit test suite alone.
 
 <!-- learntube:start -->
 ---
@@ -76,7 +135,7 @@ python -m pytest            # 104 tests collected in this checkout; each uses an
 - [x] Ticket 7 · One file becomes an app
 - [x] Ticket 8 · The rule table, and then the rule changes
 - [x] Ticket 9 · It runs on the office machine
-- [ ] Ticket 10 · It survives being switched off
+- [x] Ticket 10 · It survives being switched off
 
 Built by KUBENDHIRAN V B on [LearnTube Guided Projects](https://guidedprojects.learntube.ai).
 <!-- learntube:end -->

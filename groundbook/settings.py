@@ -13,7 +13,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    database_url: str = "sqlite:///./groundbook.db"
+    database_url: str = "sqlite:////data/groundbook.db"
     seed_dir: str = "seed"
     hold_hours: int = Field(default=24, ge=1)      # after HOLD_HOURS a requested slot no longer holds the ground
     host: str = "0.0.0.0"                          # and reachable from the gate tablet, not only from the PC itself
